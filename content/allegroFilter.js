@@ -1,17 +1,16 @@
-// Allegro offers filter with auto-refresh and auto-pagination (MV3 content script)
 (() => {
   console.log("🔍 Allegro Offer Filter: initializing…");
 
-  // Live settings from storage
   let settings = {
     enabled: true,
     minRating: 4.9,
     minOpinions: 100,
-    autoPagination: true,
-    maxPages: 10
+    autoPagination: false,
+    maxPages: 10,
+    showSummary: true,      
+    hideSponsored: false    
   };
 
-  // State
   let observer;
   let isNavigating = false;
   let pagesChecked = 0;
@@ -20,7 +19,6 @@
   let urlWatchTimer;
 
   function forceReapply(statusText = "Updating…") {
-    // Unhide and remove processed markers & badges so items can be re-evaluated
     document.querySelectorAll('[data-filter-processed="true"]').forEach(offer => {
       offer.style.display = "";
       offer.removeAttribute("data-filter-processed");
@@ -36,12 +34,9 @@
     });
     isNavigating = false;
     updateSummary(statusText);
-    // Re-run filtering immediately on the fresh DOM
     setTimeout(applyFilters, 50);
   }
-  // --------------------------------------------------------------------------
 
-  // Read settings initially
   chrome.storage.sync.get(Object.keys(settings), (out) => {
     settings = { ...settings, ...out };
     bootOrStop();
@@ -51,40 +46,25 @@
     if (area !== "sync") return;
     const hadEnabled = settings.enabled;
 
-    for (const [k, { newValue }] of Object.entries(changes)) {
-      settings[k] = newValue;
-    }
+    for (const [k, { newValue }] of Object.entries(changes)) settings[k] = newValue;
 
-    // If enable/disable toggled:
     if ("enabled" in changes) {
-      if (settings.enabled) {
-        startFilter();
-        forceReapply("Enabled — reapplying…");
-      } else {
-        stopFilter(true); // also clears UI & restores items
-      }
+      if (settings.enabled) { startFilter(); forceReapply("Enabled — reapplying…"); }
+      else { stopFilter(true); }
       return;
     }
 
-    // Thresholds / pagination settings changed → re-evaluate instantly
-    if (
-      "minRating" in changes ||
-      "minOpinions" in changes ||
-      "autoPagination" in changes ||
-      "maxPages" in changes
-    ) {
+    if ("showSummary" in changes) {
+      if (!settings.showSummary) document.getElementById("allegro-filter-summary")?.remove();
+      else updateSummary("Showing panel…");
+    }
+
+    if ("minRating" in changes || "minOpinions" in changes || "autoPagination" in changes || "maxPages" in changes || "hideSponsored" in changes) {
       if (hadEnabled) forceReapply("Settings changed — reapplying…");
     }
   });
-  // --------------------------------------------------------------------------
 
-  function bootOrStop() {
-    if (!settings.enabled) {
-      stopFilter(true);
-      return;
-    }
-    startFilter();
-  }
+  function bootOrStop() { settings.enabled ? startFilter() : stopFilter(true); }
 
   function startFilter() {
     stopObserverOnly();
@@ -94,7 +74,6 @@
     startObserver();
     startUrlWatcher();
     console.log("✅ Allegro Offer Filter is active.");
-    console.log(`💡 Criteria: rating > ${settings.minRating} & opinions > ${settings.minOpinions}`);
   }
 
   function stopFilter(clearUi = false) {
@@ -104,12 +83,7 @@
     console.log("🛑 Allegro Offer Filter stopped.");
   }
 
-  function stopObserverOnly() {
-    if (observer) {
-      observer.disconnect();
-      observer = null;
-    }
-  }
+  function stopObserverOnly() { if (observer) { observer.disconnect(); observer = null; } }
   function startUrlWatcher() {
     let currentUrl = location.href;
     urlWatchTimer && clearInterval(urlWatchTimer);
@@ -118,22 +92,13 @@
         currentUrl = location.href;
         console.log("🔄 URL changed, reapplying filters…");
         isNavigating = false;
-        document.querySelectorAll('[data-filter-processed="true"]').forEach(el => {
-          el.removeAttribute("data-filter-processed");
-          el.style.display = "";
-        });
+        document.querySelectorAll('[data-filter-processed="true"]').forEach(el => { el.removeAttribute("data-filter-processed"); el.style.display = ""; });
         setTimeout(applyFilters, 1200);
       }
     }, 1000);
   }
-  function stopUrlWatcher() {
-    if (urlWatchTimer) {
-      clearInterval(urlWatchTimer);
-      urlWatchTimer = null;
-    }
-  }
+  function stopUrlWatcher() { if (urlWatchTimer) { clearInterval(urlWatchTimer); urlWatchTimer = null; } }
 
-  // Helpers
   function getCurrentPage() {
     const currentPageLink = document.querySelector('[aria-current="page"]');
     if (currentPageLink) {
@@ -150,58 +115,47 @@
   }
 
   function goToNextPage() {
-    if (!settings.autoPagination) return false;
-    if (isNavigating) return false;
-
+    if (!settings.autoPagination || isNavigating) return false;
     const nextPageBtn = getNextPageLink();
-    if (!nextPageBtn) {
-      console.log("🚫 No next page button found - end of results");
-      updateSummary("Reached end of pages");
-      return false;
-    }
-
+    if (!nextPageBtn) { updateSummary("Reached end of pages"); return false; }
     pagesChecked++;
-    if (pagesChecked >= (settings.maxPages || 10)) {
-      console.log(`🚫 Reached maximum pages limit (${settings.maxPages}) - stopping auto-pagination`);
-      updateSummary("Reached page limit");
-      return false;
-    }
-
+    if (pagesChecked >= (settings.maxPages || 10)) { updateSummary("Reached page limit"); return false; }
     isNavigating = true;
-    console.log(`📄 No qualifying offers. Going to next page… (checked ${pagesChecked}/${settings.maxPages})`);
     updateSummary("Searching next page…");
     nextPageBtn.click();
     return true;
   }
 
-  // Core filtering
+  // --- NEW: sponsor detection ----------------------------------------------
+  function isSponsoredOffer(offer) {
+    // Try common attribute hints first
+    if (offer.querySelector('[aria-label*="Sponsorowane" i], [data-testid*="sponsor" i], [class*="sponsor" i]')) return true;
+    // Fallback: plain text match bounded by spaces
+    const txt = offer.textContent || "";
+    return /(^|\s)Sponsorowane(\s|$)/i.test(txt);
+  }
+  // -------------------------------------------------------------------------
+
   function applyFilters() {
     if (!settings.enabled || isNavigating) return;
 
-    console.log("🔄 Applying filters…");
-
     const offers = document.querySelectorAll('[class*="_1e32a_ENO3Q"], .mqen_m6.mjyo_6x.mgmw_3z.mpof_ki');
-    if (offers.length === 0) {
-      console.log("❌ No offers found.");
-      updateSummary("No offers detected");
-      return;
-    }
+    if (offers.length === 0) { updateSummary("No offers detected"); return; }
 
-    let shown = 0;
-    let hidden = 0;
+    let shown = 0, hidden = 0;
 
     offers.forEach((offer, index) => {
       try {
-        if (offer.dataset.filterProcessed === "true") {
-          if (offer.style.display === "none") hidden++; else shown++;
-          return;
-        }
+        if (offer.dataset.filterProcessed === "true") { if (offer.style.display === "none") hidden++; else shown++; return; }
         offer.dataset.filterProcessed = "true";
 
-        const ratingGroup = offer.querySelector('[role="group"][aria-label*="na 5"]');
-        if (!ratingGroup) {
+        // Hide sponsored if enabled
+        if (settings.hideSponsored && isSponsoredOffer(offer)) {
           offer.style.display = "none"; hidden++; return;
         }
+
+        const ratingGroup = offer.querySelector('[role="group"][aria-label*="na 5"]');
+        if (!ratingGroup) { offer.style.display = "none"; hidden++; return; }
 
         const ariaLabel = ratingGroup.getAttribute("aria-label") || "";
         const m = ariaLabel.match(/([\d,]+)\s+na\s+5,\s+(\d+)\s+ocen/);
@@ -220,41 +174,30 @@
             title.style.borderRadius = "4px";
             title.style.padding = "2px";
             title.dataset.filtered = "true";
-
             const badge = document.createElement("span");
             badge.textContent = `🏆 ${rating}/5 (${opinions})`;
-            badge.style.cssText = `
-              background:#00a441;color:#fff;padding:2px 6px;border-radius:12px;
-              font-size:11px;font-weight:700;margin-left:8px;display:inline-block;
-            `;
+            badge.style.cssText = `background:#00a441;color:#fff;padding:2px 6px;border-radius:12px;font-size:11px;font-weight:700;margin-left:8px;display:inline-block;`;
             title.appendChild(badge);
           }
-        } else {
-          offer.style.display = "none";
-          hidden++;
-        }
+        } else { offer.style.display = "none"; hidden++; }
       } catch (e) {
         console.error(`Error processing offer ${index}:`, e);
-        offer.style.display = "none";
-        hidden++;
+        offer.style.display = "none"; hidden++;
       }
     });
 
     filterStats = { filtered: shown, hidden, total: offers.length };
-    console.log(`📊 Filter results: ${shown} shown, ${hidden} hidden, ${offers.length} total`);
 
     if (shown === 0 && offers.length > 0) {
-      console.log("⚠️ No offers meet the criteria on this page");
-      setTimeout(() => {
-        if (!goToNextPage()) updateSummary("No qualifying offers found");
-      }, 800);
+      setTimeout(() => { if (!goToNextPage()) updateSummary("No qualifying offers found"); }, 800);
     } else {
       updateSummary();
-      if (shown > 0) console.log(`✅ Found ${shown} qualifying offers!`);
     }
   }
 
   function updateSummary(customStatus = null) {
+    if (!settings.showSummary) { document.getElementById("allegro-filter-summary")?.remove(); return; }
+
     let summary = document.getElementById("allegro-filter-summary");
     if (!summary) {
       summary = document.createElement("div");
@@ -277,21 +220,18 @@
       <div>📦 Total: ${filterStats.total}</div>
       <div style="margin-top:8px;font-size:12px;opacity:.9;">📄 Page: ${currentPage} (started: ${startingPage})</div>
       <div style="margin-top:4px;font-size:12px;opacity:.9;">🔍 Pages checked: ${pagesChecked}/${settings.maxPages}</div>
-      <div style="margin-top:8px;font-size:11px;opacity:.85;">
-        Criteria: >${settings.minOpinions} opinions & >${settings.minRating} rating
-      </div>
+      <div style="margin-top:8px;font-size:11px;opacity:.85;">Criteria: >${settings.minOpinions} opinions & >${settings.minRating} rating</div>
       <div style="margin-top:4px;font-size:11px;opacity:.8;">🔄 Auto-pagination ${settings.autoPagination ? "enabled" : "disabled"}</div>
-      <button id="allegro-filter-close" style="
-        position:absolute;top:5px;right:8px;background:none;border:none;color:#fff;
-        font-size:16px;cursor:pointer;" title="Turn off">
-        ×
-      </button>
+      <div style="margin-top:4px;font-size:11px;opacity:.8;">🚫 Sponsored hidden: ${settings.hideSponsored ? "yes" : "no"}</div>
+      <button id="allegro-filter-close" style="position:absolute;top:5px;right:8px;background:none;border:none;color:#fff;font-size:16px;cursor:pointer;" title="Hide this panel">×</button>
     `;
 
-    const btn = summary.querySelector("#allegro-filter-close");
-    btn?.addEventListener("click", async () => {
-      await chrome.storage.sync.set({ enabled: false });
-    }, { once: true });
+    // IMPORTANT CHANGE: '×' now only hides the panel (doesn't disable the filter)
+    summary.querySelector("#allegro-filter-close")?.addEventListener(
+      "click",
+      async () => { await chrome.storage.sync.set({ showSummary: false }); },
+      { once: true }
+    );
   }
 
   function startObserver() {
@@ -304,21 +244,16 @@
           for (const node of mutation.addedNodes) {
             if (node.nodeType !== Node.ELEMENT_NODE) continue;
             const el = /** @type {Element} */ (node);
-
             if (
               el.matches?.('[class*="_1e32a_ENO3Q"], .mqen_m6.mjyo_6x.mgmw_3z.mpof_ki') ||
               el.querySelector?.('[class*="_1e32a_ENO3Q"], .mqen_m6.mjyo_6x.mgmw_3z.mpof_ki')
             ) shouldRefilter = true;
-
-            if (el.matches?.('[aria-current="page"]') || el.querySelector?.('[aria-current="page"]')) {
-              pageChanged = true;
-            }
+            if (el.matches?.('[aria-current="page"]') || el.querySelector?.('[aria-current="page"]')) pageChanged = true;
           }
         }
       }
 
       if (pageChanged) {
-        console.log("📄 Page navigation detected");
         isNavigating = false;
         document.querySelectorAll('[data-filter-processed="true"]').forEach(el => el.removeAttribute("data-filter-processed"));
         shouldRefilter = true;
@@ -331,10 +266,8 @@
   }
 
   function resetOffersAndUi() {
-    const summary = document.getElementById("allegro-filter-summary");
-    summary?.remove();
-    const processed = document.querySelectorAll('[data-filter-processed="true"]');
-    processed.forEach(offer => {
+    document.getElementById("allegro-filter-summary")?.remove();
+    document.querySelectorAll('[data-filter-processed="true"]').forEach(offer => {
       offer.style.display = "";
       offer.removeAttribute("data-filter-processed");
       const title = offer.querySelector('h2 a[data-filtered="true"]');
@@ -343,8 +276,7 @@
         title.style.borderRadius = "";
         title.style.padding = "";
         title.removeAttribute("data-filtered");
-        const badge = title.querySelector('span[style*="background: #00a441"]');
-        badge?.remove();
+        title.querySelector('span[style*="background: #00a441"]')?.remove();
       }
     });
   }

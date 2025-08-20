@@ -1,5 +1,5 @@
 async function load() {
-  const keys = ["enabled","minRating","minOpinions","autoPagination","maxPages"];
+  const keys = ["enabled","minRating","minOpinions","autoPagination","maxPages","hideSponsored","showSummary"];
   const data = await chrome.storage.sync.get(keys);
   for (const k of keys) {
     const el = document.getElementById(k);
@@ -22,10 +22,12 @@ document.getElementById("save").addEventListener("click", async () => {
   const minOpinions = parseInt(document.getElementById("minOpinions").value || "100", 10);
   const autoPagination = document.getElementById("autoPagination").checked;
   const maxPages = parseInt(document.getElementById("maxPages").value || "10", 10);
+  const hideSponsored = document.getElementById("hideSponsored").checked;
+  const showSummary = document.getElementById("showSummary").checked;
 
-  await chrome.storage.sync.set({ enabled, minRating, minOpinions, autoPagination, maxPages });
+  await chrome.storage.sync.set({ enabled, minRating, minOpinions, autoPagination, maxPages, hideSponsored, showSummary });
 
-  // Content script applies instantly via storage.onChanged
+  // Content script picks this up via chrome.storage.onChanged
   updateStatus();
 });
 load();
