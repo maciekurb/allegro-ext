@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Allegro Offer Filter (Auto-Pagination)",
+  "description": "Filters Allegro offers to rating > 4.9 and > 100 opinions, auto-hides the rest, and auto-paginates until matches are found.",
+  "version": "1.0.0",
+  "icons": {
+    "16": "icons/icon16.png"
+  },
+  "action": {
+    "default_title": "Allegro Offer Filter",
+    "default_popup": "popup/popup.html"
+  },
+  "options_page": "options/options.html",
+  "background": { "service_worker": "service_worker.js" },
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://allegro.pl/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://allegro.pl/*"],
+      "js": ["content/allegroFilter.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
